@@ -29,6 +29,19 @@ fi
 # Use the PySpark version pinned in requirements.txt, not a separately installed Spark.
 unset SPARK_HOME
 
+# Spark needs a valid JAVA_HOME. If it is unset or points nowhere (the VDI's ~/.bashrc
+# can contain java-$JAVA_VERSION-... with an empty variable), derive it from `java`.
+if [ ! -x "${JAVA_HOME:-/nonexistent}/bin/java" ]; then
+    if command -v java >/dev/null 2>&1; then
+        JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+        export JAVA_HOME
+        echo "INFO: JAVA_HOME was invalid; using $JAVA_HOME"
+    else
+        echo "ERROR: Java is required for Spark but was not found on PATH." >&2
+        exit 1
+    fi
+fi
+
 if [ ! -d "$JOB_DIR/.venv" ]; then
     echo "INFO: Creating virtual environment (first run only)..."
     python3 -m venv "$JOB_DIR/.venv"
