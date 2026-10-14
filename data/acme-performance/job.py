@@ -194,8 +194,8 @@ def with_retry(
     raise RuntimeError("unreachable")  # pragma: no cover
 
 
-def connect_postgres(settings: Settings) -> "psycopg2.extensions.connection":
-    """Open a read-only PostgreSQL connection (SSL required in the cloud)."""
+def connect_postgres(settings: Settings, readonly: bool = True) -> "psycopg2.extensions.connection":
+    """Open a PostgreSQL connection (read-only by default; SSL required in the cloud)."""
 
     def _connect() -> "psycopg2.extensions.connection":
         conn = psycopg2.connect(
@@ -207,7 +207,7 @@ def connect_postgres(settings: Settings) -> "psycopg2.extensions.connection":
             sslmode="prefer" if settings.is_local else "require",
             connect_timeout=10,
         )
-        conn.set_session(readonly=True)
+        conn.set_session(readonly=readonly)
         return conn
 
     return with_retry(_connect, "postgres", retry_on=(psycopg2.OperationalError,))
@@ -222,6 +222,67 @@ def s3_client(settings: Settings) -> Any:
     return boto3.client(
         "s3", region_name=settings.aws_region, endpoint_url=settings.s3_endpoint, config=config
     )
+
+
+# ---------------------------------------------------------------------------
+# Seed (cloud sandbox bootstrap only)
+# ---------------------------------------------------------------------------
+def table_row_counts(conn: Any) -> dict[str, int | None]:
+    """Row count per source table; ``None`` when the table does not exist."""
+    counts: dict[str, int | None] = {}
+    with conn.cursor() as cur:
+        for table in SOURCE_TABLES:
+            cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+            if cur.fetchone()[0] is None:
+                counts[table] = None
+                continue
+            cur.execute(f"SELECT COUNT(*) FROM {table}")  # nosec B608
+            counts[table] = cur.fetchone()[0]
+    return counts
+
+
+def seed_source_database(settings: Settings, run: RunContext) -> dict[str, Any]:
+    """Load the sample CSVs into an empty PostgreSQL source (e.g. a fresh Aurora cluster).
+
+    Runs only when ``SOURCE_SEED_PREFIX`` points to an S3 prefix holding the dataset's
+    ``schema.sql`` and ``<table>.csv`` files. Idempotent: tables that already contain rows
+    are left untouched, so the normal pipeline never rewrites its source system.
+    """
+    prefix = os.getenv("SOURCE_SEED_PREFIX", "")
+    if not prefix:
+        log(logging.INFO, "seed skipped: SOURCE_SEED_PREFIX not set")
+        return {"status": "SKIPPED"}
+    prefix = prefix.rstrip("/") + "/"
+    conn = connect_postgres(settings, readonly=False)
+    try:
+        before = table_row_counts(conn)
+        if all(before.values()):
+            log(logging.INFO, "seed skipped: source tables already loaded", **before)
+            return {"status": "ALREADY_LOADED"}
+        s3 = s3_client(settings)
+        with tempfile.TemporaryDirectory(prefix="acme-seed-") as tmp:
+            local = Path(tmp)
+            if download_prefix(s3, settings.bucket, prefix, local) == 0:
+                raise FileNotFoundError(f"No seed files under s3://{settings.bucket}/{prefix}")
+            with conn.cursor() as cur:
+                if all(count is None for count in before.values()):
+                    cur.execute((local / "schema.sql").read_text(encoding="utf-8"))
+                elif any(count is None for count in before.values()):
+                    raise RuntimeError(f"Source database is partially created, fix manually: {before}")
+                for table in SOURCE_TABLES:  # foreign-key order
+                    if before[table]:
+                        continue
+                    with (local / f"{table}.csv").open(encoding="utf-8") as handle:
+                        cur.copy_expert(f"COPY {table} FROM STDIN WITH (FORMAT csv, HEADER true)", handle)
+            conn.commit()
+        after = table_row_counts(conn)
+        log(logging.INFO, "source database seeded", **after)
+        return {"status": "SEEDED", **after}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -606,12 +667,18 @@ def validate_event_line(line: str, source_file: str) -> tuple[bool, dict[str, An
 # ---------------------------------------------------------------------------
 def create_spark_session(app_name: str = "acme-performance") -> Any:
     """Create the Spark session (local mode unless SPARK_MASTER is set)."""
+    import pyspark
     from pyspark.sql import SparkSession  # imported lazily: Bronze does not need Spark
 
     # Spark's Python workers must use this interpreter (and its packages, e.g.
     # pydantic), not whatever "python3" happens to be first on PATH.
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+    # Always run the Spark version pinned in requirements.txt: a pre-installed Spark
+    # (VDI ~/.local/spark, or /usr/local/spark in the EKS image) may be a different version.
+    bundled = Path(pyspark.__file__).parent
+    if (bundled / "jars").is_dir():
+        os.environ["SPARK_HOME"] = str(bundled)
     spark = (
         SparkSession.builder.appName(app_name)
         .master(os.getenv("SPARK_MASTER", "local[*]"))
@@ -1191,6 +1258,7 @@ def aggregate_to_gold(settings: Settings, run: RunContext) -> dict[str, Any]:
 
 
 STAGES: dict[str, Callable[[Settings, RunContext], dict[str, Any]]] = {
+    "seed": seed_source_database,      # no-op unless SOURCE_SEED_PREFIX is set (cloud bootstrap)
     "bronze": ingest_into_bronze,
     "silver": transform_to_silver,
     "gold": aggregate_to_gold,

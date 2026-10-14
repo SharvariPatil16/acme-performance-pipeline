@@ -26,6 +26,11 @@ output "lambda_urls" {
   value       = { for name, lambda in module.lambda : lambda.lambda_function_name => lambda.lambda_function_url }
 }
 
+output "data_lake_bucket" {
+  description = "The S3 data lake bucket used by the acme-performance pipeline"
+  value       = aws_s3_bucket.datalake.bucket
+}
+
 output "s3_bucket_id" {
   description = "The ID of the S3 bucket"
   value       = aws_s3_bucket.this.id

@@ -153,6 +153,41 @@ def test_pipeline_end_to_end_and_rerun_is_idempotent(lake):
     assert events_check["silver"] == events_check["gold"] == events["rows_written"]
 
 
+def test_seed_loads_empty_database_once(lake, monkeypatch):
+    """The cloud bootstrap stage loads an empty database, then never touches it again."""
+    s3, expected = lake
+    for path in [DATASET / "schema.sql", *(DATASET / f"{t}.csv" for t in job.SOURCE_TABLES)]:
+        s3.upload_file(str(path), BUCKET, f"seed/postgres/{path.name}")
+    admin = psycopg2.connect(host=os.environ["POSTGRES_HOST"], port=int(os.getenv("POSTGRES_PORT", "5432")),
+                             dbname=os.environ["POSTGRES_NAME"], user=os.environ["POSTGRES_USER"],
+                             password=os.getenv("POSTGRES_PASS", ""))
+    admin.autocommit = True
+    scratch_db = "acme_seed_itest"
+    try:
+        with admin.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS {scratch_db}")
+            cur.execute(f"CREATE DATABASE {scratch_db}")
+    except psycopg2.Error as exc:
+        admin.close()
+        pytest.skip(f"cannot create a scratch database: {exc}")
+    try:
+        monkeypatch.setenv("POSTGRES_NAME", scratch_db)
+        monkeypatch.setenv("SOURCE_SEED_PREFIX", "seed/postgres/")
+        assert job.main(["--stage", "seed"]) == 0
+        assert postgres_counts() == expected                     # every table fully loaded
+        assert job.main(["--stage", "seed"]) == 0                 # second run: already loaded
+        assert postgres_counts() == expected                     # no duplicates
+    finally:
+        with admin.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS {scratch_db} WITH (FORCE)")
+        admin.close()
+
+
+def test_seed_is_skipped_without_prefix(monkeypatch):
+    monkeypatch.delenv("SOURCE_SEED_PREFIX", raising=False)
+    assert job.seed_source_database(settings=None, run=None) == {"status": "SKIPPED"}
+
+
 def test_failed_run_is_logged_and_exits_non_zero(lake, monkeypatch):
     """Unreachable database: the job retries, records a FAILED manifest and exits 1."""
     s3, _ = lake

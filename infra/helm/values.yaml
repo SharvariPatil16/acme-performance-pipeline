@@ -3,6 +3,7 @@ pythonJob:
   name: "python-job"
   scriptContent: ""
   requirementsContent: ""
+  env: {} # environment variables for the job container (set per job by Terraform)
   backoffLimit: 4
   ttlSecondsAfterFinished: 100
   restartPolicy: Never

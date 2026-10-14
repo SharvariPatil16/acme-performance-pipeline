@@ -37,6 +37,13 @@ spec:
                 pip install --no-cache-dir -r /app/requirements.txt
               fi
               python /app/job.py
+          {{- with .Values.pythonJob.env }}
+          env:
+            {{- range $name, $value := . }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
           {{- if .Values.pythonJob.scriptContent }}
           volumeMounts:
             - name: script
