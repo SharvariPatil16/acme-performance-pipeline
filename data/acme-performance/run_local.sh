@@ -26,11 +26,21 @@ if [ "${IS_LOCAL:-true}" = "true" ]; then
     unset AWS_SESSION_TOKEN AWS_PROFILE
 fi
 
+# Use the PySpark version pinned in requirements.txt, not a separately installed Spark.
+unset SPARK_HOME
+
 if [ ! -d "$JOB_DIR/.venv" ]; then
-    echo "INFO: Creating virtual environment and installing requirements (first run only)..."
+    echo "INFO: Creating virtual environment (first run only)..."
     python3 -m venv "$JOB_DIR/.venv"
     "$JOB_DIR/.venv/bin/pip" install --quiet --upgrade pip
+fi
+# Re-install only when requirements.txt changed since the last install.
+REQ_STAMP="$JOB_DIR/.venv/.requirements.sha256"
+REQ_HASH="$(sha256sum "$JOB_DIR/requirements.txt" | cut -d' ' -f1)"
+if [ "$(cat "$REQ_STAMP" 2>/dev/null)" != "$REQ_HASH" ]; then
+    echo "INFO: Installing requirements..."
     "$JOB_DIR/.venv/bin/pip" install --quiet -r "$JOB_DIR/requirements.txt"
+    echo "$REQ_HASH" > "$REQ_STAMP"
 fi
 
 mkdir -p "$JOB_DIR/logs"
