@@ -861,10 +861,333 @@ def transform_to_silver(settings: Settings, run: RunContext) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Gold layer: business-ready datasets (one per business question)
+# ---------------------------------------------------------------------------
+# Business rules, kept in one place so they are easy to review and change.
+CRITICAL_GAP_LEVELS = 2          # required_level - proficiency_level >= 2 is a critical gap
+LOW_RATING = 2                   # rating <= 2 counts as low performance
+HIGH_RATING = 4                  # rating >= 4 counts as high performance
+RECENT_TRAINING_DAYS = 365       # "recent" learning activity window, counted back from the data's as-of date
+
+
+@dataclass(frozen=True)
+class GoldTable:
+    """A Gold dataset: its grain (unique key) and the business question it answers."""
+
+    name: str
+    grain: tuple[str, ...]
+    question: str
+
+
+GOLD_TABLES: tuple[GoldTable, ...] = (
+    GoldTable("employee_performance_history", ("employee_id", "review_period"),
+              "What are the performance ratings and review history for each employee?"),
+    GoldTable("employee_skill_gaps", ("employee_id", "competency_id"),
+              "Which employees have critical skill gaps in key competencies?"),
+    GoldTable("competency_coverage", ("competency_id",),
+              "Which competencies have the most critical gaps across the organization?"),
+    GoldTable("promotion_readiness", ("employee_id",),
+              "Who are the high-potential employees ready for promotion?"),
+    GoldTable("employee_training_summary", ("employee_id",),
+              "What training and development activities has each employee completed?"),
+    GoldTable("employee_course_progress", ("employee_id", "course_name"),
+              "Which courses has each employee started, completed or certified in?"),
+    GoldTable("attrition_risk", ("employee_id",),
+              "Which employees are at risk of attrition based on performance trends?"),
+    GoldTable("team_performance", ("team_id",),
+              "How does employee performance correlate with team and project outcomes?"),
+    GoldTable("skill_distribution", ("department", "competency_id"),
+              "What is the distribution of skills across the organization?"),
+)
+
+
+def employee_dim(silver: dict[str, Any]) -> Any:
+    """Employees with their team and department (shared by several Gold tables)."""
+    from pyspark.sql import functions as F
+
+    teams = silver["teams"].select("team_id", F.col("name").alias("team_name"), "department")
+    return (silver["employees"]
+            .select("employee_id", F.concat_ws(" ", "first_name", "last_name").alias("employee_name"),
+                    "job_level", "hire_date", "team_id")
+            .join(teams, "team_id", "left"))
+
+
+def build_performance_history(silver: dict[str, Any]) -> Any:
+    """One row per employee per review period, with change vs the previous review."""
+    from pyspark.sql import Window
+    from pyspark.sql import functions as F
+
+    by_employee = Window.partitionBy("employee_id").orderBy("review_period")
+    return (silver["performance_reviews"]
+            .select("employee_id", "review_period", "rating", "submitted_date", "manager_comment")
+            .withColumn("previous_rating", F.lag("rating").over(by_employee))
+            .withColumn("rating_change", F.col("rating") - F.col("previous_rating"))
+            .withColumn("review_number", F.row_number().over(by_employee))
+            .join(employee_dim(silver), "employee_id", "left"))
+
+
+def build_skill_gaps(silver: dict[str, Any]) -> Any:
+    """One row per employee per competency: proficiency vs required level."""
+    from pyspark.sql import functions as F
+
+    gap = F.col("required_level") - F.col("proficiency_level")
+    competencies = silver["competencies"].select("competency_id", F.col("name").alias("competency_name"), "category")
+    return (silver["competency_assessments"]
+            .select("employee_id", "competency_id", "proficiency_level", "required_level", "assessed_date")
+            .withColumn("gap_levels", F.greatest(gap, F.lit(0)))
+            .withColumn("gap_severity", F.when(gap >= CRITICAL_GAP_LEVELS, "critical")
+                        .when(gap >= 1, "minor").otherwise("none"))
+            .withColumn("is_critical_gap", gap >= CRITICAL_GAP_LEVELS)
+            .join(competencies, "competency_id", "left")
+            .join(employee_dim(silver), "employee_id", "left"))
+
+
+def build_competency_coverage(skill_gaps: Any) -> Any:
+    """One row per competency: how well the organization covers it."""
+    from pyspark.sql import functions as F
+
+    return (skill_gaps.groupBy("competency_id", "competency_name", "category")
+            .agg(F.countDistinct("employee_id").alias("employees_assessed"),
+                 F.round(F.avg("proficiency_level"), 2).alias("avg_proficiency"),
+                 F.round(F.avg("required_level"), 2).alias("avg_required"),
+                 F.round(100 * F.avg((F.col("gap_levels") == 0).cast("int")), 1).alias("pct_meeting_required"),
+                 F.sum(F.col("is_critical_gap").cast("int")).alias("critical_gap_count")))
+
+
+def latest_and_previous_rating(silver: dict[str, Any]) -> Any:
+    """Per employee: latest rating, previous rating, average rating and trend."""
+    from pyspark.sql import Window
+    from pyspark.sql import functions as F
+
+    newest_first = Window.partitionBy("employee_id").orderBy(F.col("review_period").desc())
+    ranked = silver["performance_reviews"].withColumn("rn", F.row_number().over(newest_first))
+    latest = ranked.filter("rn = 1").select("employee_id", F.col("review_period").alias("latest_period"),
+                                            F.col("rating").alias("latest_rating"))
+    previous = ranked.filter("rn = 2").select("employee_id", F.col("rating").alias("previous_rating"))
+    average = silver["performance_reviews"].groupBy("employee_id").agg(
+        F.round(F.avg("rating"), 2).alias("avg_rating"), F.count("*").alias("reviews"))
+    change = F.col("latest_rating") - F.col("previous_rating")
+    return (latest.join(previous, "employee_id", "left").join(average, "employee_id", "left")
+            .withColumn("rating_trend", F.when(F.col("previous_rating").isNull(), "single review")
+                        .when(change < 0, "declining").when(change > 0, "improving").otherwise("stable")))
+
+
+def build_promotion_readiness(silver: dict[str, Any], skill_gaps: Any) -> Any:
+    """One row per employee: potential, readiness, performance and critical gaps."""
+    from pyspark.sql import functions as F
+
+    gaps = skill_gaps.groupBy("employee_id").agg(
+        F.sum(F.col("is_critical_gap").cast("int")).alias("critical_gaps"))
+    talent = silver["talent_review"].select("employee_id", "review_cycle", "potential_rating", "promotion_readiness")
+    df = (employee_dim(silver)
+          .join(talent, "employee_id", "left")
+          .join(latest_and_previous_rating(silver), "employee_id", "left")
+          .join(gaps, "employee_id", "left")
+          .fillna({"critical_gaps": 0}))
+    return (df.withColumn("is_high_potential", F.col("potential_rating") == "High")
+            .withColumn("is_promotion_candidate",
+                        (F.col("potential_rating") == "High") & (F.col("promotion_readiness") == "Ready Now")
+                        & (F.col("latest_rating") >= HIGH_RATING) & (F.col("critical_gaps") == 0)))
+
+
+def training_as_of(silver: dict[str, Any]) -> Any:
+    """The data's as-of date: the latest learning event (not the wall clock)."""
+    from pyspark.sql import functions as F
+
+    return silver["learning_activity"].agg(F.max(F.to_date("event_date"))).first()[0]
+
+
+def build_training_summary(silver: dict[str, Any]) -> Any:
+    """One row per employee (all employees, zero when no activity)."""
+    from pyspark.sql import functions as F
+
+    as_of = training_as_of(silver)
+    ev = silver["learning_activity"]
+
+    def count_type(event_type: str) -> Any:
+        return F.sum((F.col("event_type") == event_type).cast("int"))
+
+    activity = ev.groupBy("employee_id").agg(
+        F.count("*").alias("learning_events"),
+        count_type("enrollment").alias("enrollments"),
+        count_type("module_completed").alias("modules_completed"),
+        count_type("course_completed").alias("courses_completed"),
+        count_type("quiz_passed").alias("quizzes_passed"),
+        count_type("certification_earned").alias("certifications_earned"),
+        F.countDistinct(F.when(F.col("event_type") == "course_completed", F.col("course_name"))).alias("distinct_courses_completed"),
+        F.round(F.avg(F.when(F.col("event_type").isin("quiz_attempted", "quiz_passed"), F.col("score"))), 1).alias("avg_quiz_score"),
+        F.max(F.to_date("event_date")).alias("last_activity_date"),
+    )
+    counts = ["learning_events", "enrollments", "modules_completed", "courses_completed",
+              "quizzes_passed", "certifications_earned", "distinct_courses_completed"]
+    return (employee_dim(silver).join(activity, "employee_id", "left").fillna({c: 0 for c in counts})
+            .withColumn("days_since_last_activity", F.datediff(F.lit(as_of), F.col("last_activity_date")))
+            .withColumn("active_last_12_months",
+                        F.coalesce(F.col("days_since_last_activity") <= RECENT_TRAINING_DAYS, F.lit(False)))
+            .withColumn("as_of_date", F.lit(as_of)))
+
+
+def build_course_progress(silver: dict[str, Any]) -> Any:
+    """One row per employee per course: furthest stage reached."""
+    from pyspark.sql import functions as F
+
+    def has(event_type: str) -> Any:
+        return F.max((F.col("event_type") == event_type).cast("int")) == 1
+
+    progress = silver["learning_activity"].groupBy("employee_id", "course_name").agg(
+        F.min("event_date").alias("first_activity"), F.max("event_date").alias("last_activity"),
+        has("enrollment").alias("enrolled"), has("course_completed").alias("completed"),
+        has("certification_earned").alias("certified"), F.max("score").alias("best_score"))
+    status = (F.when(F.col("certified"), "certified").when(F.col("completed"), "completed")
+              .otherwise("in progress"))
+    return progress.withColumn("status", status).join(employee_dim(silver), "employee_id", "left")
+
+
+def build_attrition_risk(silver: dict[str, Any], training: Any) -> Any:
+    """One row per employee: talent-review risk label plus performance signals.
+
+    risk_score = label points (Low 1, Medium 2, High 3)
+                 + 1 if the rating is declining
+                 + 1 if the latest rating is low (<= LOW_RATING)
+                 + 1 if no learning activity in the last 12 months
+    """
+    from pyspark.sql import functions as F
+
+    talent = silver["talent_review"].select("employee_id", "attrition_risk", "potential_rating")
+    signals = (employee_dim(silver).join(talent, "employee_id", "left")
+               .join(latest_and_previous_rating(silver), "employee_id", "left")
+               .join(training.select("employee_id", "active_last_12_months"), "employee_id", "left"))
+    label_points = (F.when(F.col("attrition_risk") == "High", 3)
+                    .when(F.col("attrition_risk") == "Medium", 2).otherwise(1))
+    score = (label_points + (F.col("rating_trend") == "declining").cast("int")
+             + (F.col("latest_rating") <= LOW_RATING).cast("int")
+             + (~F.col("active_last_12_months")).cast("int"))
+    return (signals.withColumn("is_declining", F.col("rating_trend") == "declining")
+            .withColumn("is_low_performer", F.col("latest_rating") <= LOW_RATING)
+            .withColumn("risk_score", score)
+            .withColumn("risk_band", F.when(F.col("risk_score") >= 4, "High")
+                        .when(F.col("risk_score") >= 3, "Medium").otherwise("Low")))
+
+
+def build_team_performance(silver: dict[str, Any], promotion: Any, skill_gaps: Any) -> Any:
+    """One row per team: people metrics next to project outcomes (projects link to teams only)."""
+    from pyspark.sql import functions as F
+
+    people = promotion.groupBy("team_id").agg(
+        F.count("*").alias("headcount"),
+        F.round(F.avg("latest_rating"), 2).alias("avg_latest_rating"),
+        F.round(100 * F.avg((F.col("latest_rating") >= HIGH_RATING).cast("int")), 1).alias("pct_high_performers"),
+        F.round(100 * F.avg(F.col("is_high_potential").cast("int")), 1).alias("pct_high_potential"),
+        F.round(F.avg("critical_gaps"), 2).alias("avg_critical_gaps"))
+    projects = silver["projects"].groupBy("team_id").agg(
+        F.count("*").alias("projects"),
+        F.round(F.avg("outcome_score"), 2).alias("avg_project_outcome_score"),
+        F.round(100 * F.avg((F.col("outcome_status") == "on-time").cast("int")), 1).alias("pct_projects_on_time"))
+    teams = silver["teams"].select("team_id", F.col("name").alias("team_name"), "department")
+    return (teams.join(people, "team_id", "left").join(projects, "team_id", "left")
+            .fillna({"headcount": 0, "projects": 0})
+            .withColumn("has_projects", F.col("projects") > 0))
+
+
+def build_skill_distribution(skill_gaps: Any) -> Any:
+    """One row per department per competency: proficiency spread and coverage."""
+    from pyspark.sql import functions as F
+
+    def level(n: int) -> Any:
+        return F.sum((F.col("proficiency_level") == n).cast("int")).alias(f"level_{n}")
+
+    return (skill_gaps.groupBy("department", "competency_id", "competency_name", "category")
+            .agg(F.countDistinct("employee_id").alias("employees_assessed"),
+                 *[level(n) for n in range(1, 6)],
+                 F.round(F.avg("proficiency_level"), 2).alias("avg_proficiency"),
+                 F.round(100 * F.avg((F.col("gap_levels") == 0).cast("int")), 1).alias("pct_meeting_required"),
+                 F.sum(F.col("is_critical_gap").cast("int")).alias("critical_gaps")))
+
+
+def gold_checks(name: str, df: Any, grain: tuple[str, ...], expected_rows: int | None) -> dict[str, Any]:
+    """Validate a Gold table: grain is unique, no null keys, rows match the expected count."""
+    rows = df.count()
+    distinct = df.select(*grain).distinct().count()
+    null_keys = df.filter(" OR ".join(f"`{c}` IS NULL" for c in grain)).count()
+    checks = {"rows": rows, "grain_unique": rows == distinct, "null_grain_keys": null_keys,
+              "expected_rows": expected_rows, "rows_match_expected": expected_rows is None or rows == expected_rows}
+    if rows == 0 or not checks["grain_unique"] or null_keys or not checks["rows_match_expected"]:
+        raise RuntimeError(f"Gold check failed for {name}: {checks}")
+    return checks
+
+
+def load_silver(spark: Any, s3: Any, settings: Settings, workdir: Path) -> dict[str, Any]:
+    """Download every Silver entity and open it as a Spark DataFrame."""
+    silver = {}
+    for spec in (*TABLE_SPECS, EVENT_SPEC):
+        local = workdir / "silver_in" / spec.name
+        if download_prefix(s3, settings.bucket, f"silver/{spec.name}/", local) == 0:
+            raise FileNotFoundError(f"Silver entity {spec.name} is empty - run the silver stage first")
+        silver[spec.name] = spark.read.parquet(str(local)).cache()
+    return silver
+
+
 def aggregate_to_gold(settings: Settings, run: RunContext) -> dict[str, Any]:
-    """Aggregate Silver data into the Gold layer (not implemented yet)."""
-    log(logging.WARNING, "gold stage not implemented yet - skipped")
-    return {"status": "SKIPPED"}
+    """Build the Gold datasets from Silver, check them and publish them to S3."""
+    from pyspark.sql import functions as F
+
+    s3 = s3_client(settings)
+    spark = create_spark_session()
+    records: list[dict[str, Any]] = []
+    status = "FAILED"
+    try:
+        with tempfile.TemporaryDirectory(prefix="acme-gold-") as tmp:
+            workdir = Path(tmp)
+            silver = load_silver(spark, s3, settings, workdir)
+            n_employees = silver["employees"].count()
+            skill_gaps = build_skill_gaps(silver).cache()
+            promotion = build_promotion_readiness(silver, skill_gaps).cache()
+            training = build_training_summary(silver).cache()
+            built = {
+                "employee_performance_history": (build_performance_history(silver),
+                                                 silver["performance_reviews"].count()),
+                "employee_skill_gaps": (skill_gaps, silver["competency_assessments"].count()),
+                "competency_coverage": (build_competency_coverage(skill_gaps),
+                                        silver["competency_assessments"].select("competency_id").distinct().count()),
+                "promotion_readiness": (promotion, n_employees),
+                "employee_training_summary": (training, n_employees),
+                "employee_course_progress": (build_course_progress(silver),
+                                             silver["learning_activity"].select("employee_id", "course_name").distinct().count()),
+                "attrition_risk": (build_attrition_risk(silver, training), n_employees),
+                "team_performance": (build_team_performance(silver, promotion, skill_gaps), silver["teams"].count()),
+                "skill_distribution": (build_skill_distribution(skill_gaps), None),
+            }
+            # Cross-layer reconciliation: every Silver event is counted exactly once in Gold.
+            events_in_gold = training.agg(F.sum("learning_events")).first()[0]
+            events_in_silver = silver["learning_activity"].count()
+            if events_in_gold != events_in_silver:
+                raise RuntimeError(f"Event reconciliation failed: gold={events_in_gold} silver={events_in_silver}")
+
+            for table in GOLD_TABLES:
+                df, expected = built[table.name]
+                df = (df.withColumn("_gold_run_id", F.lit(run.run_id))
+                      .withColumn("_gold_built_at", F.lit(run.started_at.isoformat())))
+                checks = gold_checks(table.name, df, table.grain, expected)
+                out = workdir / "gold" / table.name
+                df.coalesce(1).write.mode("overwrite").parquet(str(out))
+                files = replace_prefix(s3, settings.bucket, f"gold/{table.name}/", out)
+                record = {"target": f"gold/{table.name}", "grain": list(table.grain),
+                          "question": table.question, "files": files, **checks}
+                records.append(record)
+                log(logging.INFO, "gold table written", table=table.name, rows=checks["rows"],
+                    grain=list(table.grain), grain_unique=checks["grain_unique"])
+            records.append({"check": "events_silver_vs_gold", "silver": events_in_silver, "gold": events_in_gold,
+                            "reconciled": True})
+        status = "SUCCEEDED"
+    finally:
+        key = f"gold/_lineage/ingest_date={run.ingest_date}/gold-{run.run_id}.json"
+        s3.put_object(Bucket=settings.bucket, Key=key, ContentType="application/json",
+                      Body=json.dumps({"run_id": run.run_id, "stage": "gold", "status": status,
+                                       "records": records}, indent=2, default=str).encode())
+        spark.stop()
+    return {"tables": sum(1 for r in records if "target" in r),
+            "rows_written": sum(r.get("rows", 0) for r in records)}
 
 
 STAGES: dict[str, Callable[[Settings, RunContext], dict[str, Any]]] = {
