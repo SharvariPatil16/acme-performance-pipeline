@@ -608,6 +608,10 @@ def create_spark_session(app_name: str = "acme-performance") -> Any:
     """Create the Spark session (local mode unless SPARK_MASTER is set)."""
     from pyspark.sql import SparkSession  # imported lazily: Bronze does not need Spark
 
+    # Spark's Python workers must use this interpreter (and its packages, e.g.
+    # pydantic), not whatever "python3" happens to be first on PATH.
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
     spark = (
         SparkSession.builder.appName(app_name)
         .master(os.getenv("SPARK_MASTER", "local[*]"))
