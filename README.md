@@ -1,5 +1,12 @@
 # Coding Workshop
 
+> **Participant submission — Data Engineer track (ACME Employee Performance pipeline).**
+> Start here: [`data/acme-performance/README.md`](data/acme-performance/README.md) — architecture, how to run,
+> design decisions and limitations. Also: [insights notebook](notebooks/acme_performance_insights.ipynb) ·
+> [test evidence](data/acme-performance/TEST_EVIDENCE.md) ·
+> [source-to-target mapping](data/acme-performance/docs/SOURCE_TO_TARGET.md).
+> The original workshop instructions below are unchanged.
+
 The goal of this coding workshop is to enable and assess the hands-on skills
 of participants through development of a practical technical solution that
 solves a theoretical business problem.
