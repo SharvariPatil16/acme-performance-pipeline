@@ -6,58 +6,12 @@
 # Creates a Python virtual environment in data/acme-performance/.venv on first run.
 set -euo pipefail
 
-JOB_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-ENV_FILE="$JOB_DIR/.env.local"
-
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: $ENV_FILE not found. Run: cp $JOB_DIR/.env.sample $ENV_FILE" >&2
-    exit 1
-fi
-
-# Export every variable defined in .env.local for the job process.
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
-
-# LocalStack accepts any credentials; never use the real workshop AWS keys locally.
-if [ "${IS_LOCAL:-true}" = "true" ]; then
-    export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
-    unset AWS_SESSION_TOKEN AWS_PROFILE
-fi
-
-# Use the PySpark version pinned in requirements.txt, not a separately installed Spark.
-unset SPARK_HOME
-
-# Spark needs a valid JAVA_HOME. If it is unset or points nowhere (the VDI's ~/.bashrc
-# can contain java-$JAVA_VERSION-... with an empty variable), derive it from `java`.
-if [ ! -x "${JAVA_HOME:-/nonexistent}/bin/java" ]; then
-    if command -v java >/dev/null 2>&1; then
-        JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
-        export JAVA_HOME
-        echo "INFO: JAVA_HOME was invalid; using $JAVA_HOME"
-    else
-        echo "ERROR: Java is required for Spark but was not found on PATH." >&2
-        exit 1
-    fi
-fi
-
-if [ ! -d "$JOB_DIR/.venv" ]; then
-    echo "INFO: Creating virtual environment (first run only)..."
-    python3 -m venv "$JOB_DIR/.venv"
-    "$JOB_DIR/.venv/bin/pip" install --quiet --upgrade pip
-fi
-# Re-install only when requirements.txt changed since the last install.
-REQ_STAMP="$JOB_DIR/.venv/.requirements.sha256"
-REQ_HASH="$(sha256sum "$JOB_DIR/requirements.txt" | cut -d' ' -f1)"
-if [ "$(cat "$REQ_STAMP" 2>/dev/null)" != "$REQ_HASH" ]; then
-    echo "INFO: Installing requirements..."
-    "$JOB_DIR/.venv/bin/pip" install --quiet -r "$JOB_DIR/requirements.txt"
-    echo "$REQ_HASH" > "$REQ_STAMP"
-fi
+# shellcheck source=env_setup.sh
+source "$(dirname "$0")/env_setup.sh"
+install_requirements "$JOB_DIR/requirements.txt"
 
 mkdir -p "$JOB_DIR/logs"
 LOG_FILE="$JOB_DIR/logs/run-$(date -u +%Y%m%dT%H%M%SZ).log"
 echo "INFO: Logging to $LOG_FILE"
-"$JOB_DIR/.venv/bin/python" "$JOB_DIR/job.py" "$@" 2>&1 | tee "$LOG_FILE"
+"$VENV/bin/python" "$JOB_DIR/job.py" "$@" 2>&1 | tee "$LOG_FILE"
 exit "${PIPESTATUS[0]}"

@@ -1,0 +1,4 @@
+# Test-only packages, installed on top of ../requirements.txt
+pytest==8.4.2
+pytest-cov==7.0.0
+moto[s3]==5.1.14
