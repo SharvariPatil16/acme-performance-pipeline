@@ -12,7 +12,7 @@ LocalStack S3 (`coding-workshop-datalake-1bd9f4ac`), on 2026-10-14.
 
 | Result | Value |
 |---|---|
-| Tests | **69 passed**, 0 failed (111 s) |
+| Tests | **69 passed**, 0 failed (111 s) on the VDI; **71 passed** after adding the two seed-stage tests (dev environment, 148 s) |
 | Line coverage of `job.py` | **98 %** (606 statements, 15 missed — defensive branches) |
 | Report | `data/acme-performance/logs/test-report-<timestamp>.txt` (git-ignored) |
 
@@ -70,7 +70,26 @@ Executed on the VDI with 0 errors and 7 charts.
 The sample is small, so Spark start-up dominates. Not yet measured: memory/CPU profiling and
 small/medium/large scale tests — the job can be pointed at a larger landing prefix with no code change.
 
-## 4. Defects found by testing on the VDI (and fixed)
+## 4. Cloud deployment (AWS ap-south-1, 2026-10-15)
+
+```bash
+./data/acme-performance/deploy_cloud.sh plan     # Plan: 8 to add, 2 to change (Aurora tags only), 0 to destroy
+./data/acme-performance/deploy_cloud.sh apply    # run by the participant
+./data/acme-performance/deploy_cloud.sh status
+```
+
+| Check | Result |
+|---|---|
+| Data lake bucket + uploads | ✅ `Apply complete! 3 added`; `landing files in S3: 783`; seed CSVs uploaded |
+| EKS, node group, JupyterHub, Helm data job | ✅ `Apply complete! Resources: 5 added, 2 changed, 0 destroyed`; Helm `STATUS: deployed` |
+| Job on EKS | ❌ 4 pods, all `Error`: seed stage → `connection to server at "coding-workshop-rds-1bd9f4ac.cluster-…" (10.0.40.119), port 5432 failed: timeout expired`; retried 1 s/2 s/4 s, then `job failed` (retry and failure logging worked as designed) |
+| Diagnosis | EKS nodes in `sg-03b8f8749f01e886e`; Aurora SG `sg-033177241dd1d5acc` allows only itself + TCP 389/443 |
+| Permission check (`--dry-run`, nothing changed) | `AuthorizeSecurityGroupIngress` → UnauthorizedOperation; `CreateLaunchTemplate` → UnauthorizedOperation |
+
+**Conclusion:** deployment automation works; the cloud run needs one security-group rule from the workshop admin
+(TCP 5432 from the EKS cluster SG to the Aurora SG). See README → *Cloud deployment*.
+
+## 5. Defects found by testing on the VDI (and fixed)
 
 | Symptom | Cause | Fix |
 |---|---|---|

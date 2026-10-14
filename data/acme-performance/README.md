@@ -11,7 +11,7 @@ analytics-ready datasets that answer seven business questions. Built for the Cit
 | **Sources** | PostgreSQL (7 tables) + S3 landing zone (783 JSON-lines files, 29,868 learning events) |
 | **Data lake** | One S3 bucket, medallion layout: `landing/` → `bronze/` → `silver/` → `gold/` |
 | **Outputs** | 9 Gold datasets + insights notebook (`notebooks/acme_performance_insights.ipynb`) |
-| **Tests** | 69 tests, 98 % coverage — see [TEST_EVIDENCE.md](TEST_EVIDENCE.md) |
+| **Tests** | 71 tests, 98 % coverage — see [TEST_EVIDENCE.md](TEST_EVIDENCE.md) |
 | **Mapping** | Column-level source → target lineage — see [docs/SOURCE_TO_TARGET.md](docs/SOURCE_TO_TARGET.md) |
 
 ## Architecture
@@ -113,7 +113,7 @@ aws --endpoint-url http://localhost:4566 s3 sync \
 
 ./data/acme-performance/run_local.sh                 # all stages: bronze → silver → gold
 ./data/acme-performance/run_local.sh --stage silver  # or one stage
-./data/acme-performance/run_tests.sh                 # 69 tests + coverage report
+./data/acme-performance/run_tests.sh                 # 71 tests + coverage report
 ./notebooks/run_notebook.sh                          # execute the insights notebook
 ```
 
@@ -132,6 +132,43 @@ VDI quirks automatically: an invalid `JAVA_HOME` and a separately installed `SPA
 | `SPARK_MASTER`, `LOG_LEVEL` | optional | optional |
 
 No secret is stored in the repository; `.env.local` is git-ignored.
+
+## Cloud deployment (AWS, ap-south-1)
+
+```bash
+./data/acme-performance/deploy_cloud.sh plan     # read-only: what Terraform would change
+./data/acme-performance/deploy_cloud.sh apply    # bucket -> data upload -> official bin/deploy-backend.sh (EKS on)
+./data/acme-performance/deploy_cloud.sh status   # job, pods and recent logs on EKS
+```
+
+`apply` creates the data lake bucket (`infra/datalake.tf`), uploads the sample CSVs to `seed/postgres/` and the events to
+`landing/`, then runs the workshop's `bin/deploy-backend.sh` with `TF_VAR_aws_eks_enabled=true`. Terraform deploys the job
+to EKS through the workshop Helm chart, now extended to pass the job's settings (Aurora endpoint, credentials, bucket,
+region) from a git-ignored, sensitive values file. In the cloud the job's `seed` stage loads the CSVs into the empty
+Aurora database once, then runs Bronze → Silver → Gold.
+
+**Deployment result (2026-10-15):**
+
+| Component | Result |
+|---|---|
+| Terraform apply (bucket, EKS cluster + node group, JupyterHub, data job; Aurora tags) | ✅ `Apply complete` — 8 added, 2 changed (tags only), 0 destroyed |
+| Data lake bucket `coding-workshop-datalake-1bd9f4ac` (private, AES256) | ✅ created; 783 landing files + 7 CSVs + `schema.sql` uploaded |
+| EKS job `coding-workshop-acme-performance` | ✅ deployed and started; ❌ **cannot reach Aurora** — `port 5432 failed: timeout` |
+
+**Root cause (network, not code):** EKS managed nodes use the EKS cluster security group (`sg-03b8f8749f01e886e`),
+while Aurora uses the workshop security group (`sg-033177241dd1d5acc`), which only accepts traffic from itself
+(plus TCP 389/443). The participant IAM role is not allowed to fix this — both
+`ec2 authorize-security-group-ingress` and `ec2 create-launch-template` return `UnauthorizedOperation` (verified with
+`--dry-run`, no changes made).
+
+**Fix (needs workshop admin):** add an inbound rule on `sg-033177241dd1d5acc` for **TCP 5432 from
+`sg-03b8f8749f01e886e`** (or attach the workshop security group to the node group). No code change is needed; then
+re-run `deploy_cloud.sh apply` (or delete the finished Kubernetes job so Helm re-creates it) and check `status`.
+Alternative within participant permissions: a VPC Lambda (the workshop's Lambdas already use the workshop security group)
+that exports the source tables to S3 for the EKS job.
+
+**Cost note:** the EKS cluster and node keep running. Remove them with `bin/cleanup-environment.sh` when the workshop ends
+(it removes all workshop infrastructure — confirm with the organizers first).
 
 ## Design decisions and trade-offs
 
@@ -153,6 +190,9 @@ No secret is stored in the repository; `.env.local` is git-ignored.
 * Learning courses are free-text names, not linked to competencies, so training cannot be matched to specific gaps.
 * Source timestamps have no time zone; they are treated as UTC.
 * Performance was measured on the sample only (≈ 55,000 records/min including Spark start-up).
+* **Cloud run is blocked by networking:** the infrastructure and job deploy successfully, but the EKS job cannot reach
+  Aurora until the workshop admin opens TCP 5432 between the two security groups (see *Cloud deployment*). The full
+  pipeline is verified end to end on the VDI (LocalStack S3 + PostgreSQL) — see [TEST_EVIDENCE.md](TEST_EVIDENCE.md).
 
 ## Repository layout (participant additions)
 
