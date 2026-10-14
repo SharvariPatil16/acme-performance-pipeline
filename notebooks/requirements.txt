@@ -1,0 +1,5 @@
+# Extra packages for the insights notebook, installed on top of
+# data/acme-performance/requirements.txt (pandas, pyarrow, boto3).
+matplotlib==3.10.7
+ipykernel==7.4.0
+nbconvert==7.17.2
