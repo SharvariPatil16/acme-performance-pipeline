@@ -1,0 +1,89 @@
+{{- /*
+In-cluster PostgreSQL used as the pipeline's source system on EKS.
+Enabled per job by Terraform (sourceDb.enabled). The job reaches it through a
+ClusterIP Service, so no AWS security-group rule is needed. Storage is an emptyDir:
+the job's seed stage reloads the sample data from S3 whenever the database is empty.
+*/ -}}
+{{- if and .Values.pythonJob.enabled .Values.sourceDb.enabled }}
+{{- $db := printf "%s-%s-db" (include "name" .) .Values.pythonJob.name }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $db }}
+  labels:
+    {{- include "labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  password: {{ required "sourceDb.password is required" .Values.sourceDb.password | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $db }}
+  labels:
+    {{- include "labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: {{ $db }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $db }}
+  labels:
+    {{- include "labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: {{ $db }}
+  template:
+    metadata:
+      labels:
+        {{- include "labels" . | nindent 8 }}
+        app.kubernetes.io/component: {{ $db }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.sourceDb.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.sourceDb.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.sourceDb.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $db }}
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          emptyDir: {}
+{{- end }}

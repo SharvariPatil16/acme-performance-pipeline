@@ -18,3 +18,11 @@ pythonJob:
     requests:
       cpu: 0.5
       memory: 1Gi
+
+# Optional in-cluster PostgreSQL source for a data job (see templates/source-db.yaml).
+sourceDb:
+  enabled: false
+  image: postgres:16
+  database: acme_performance
+  user: acme
+  password: "" # set by Terraform from random_password; never committed

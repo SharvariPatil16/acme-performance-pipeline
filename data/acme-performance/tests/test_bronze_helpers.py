@@ -30,6 +30,35 @@ def test_settings_from_env(monkeypatch):
     assert settings.bucket == "coding-workshop-datalake-test" and settings.s3_endpoint is None
 
 
+@pytest.mark.parametrize(
+    ("is_local", "override", "expected"),
+    [(True, None, "prefer"), (False, None, "require"), (False, "disable", "disable")],
+)
+def test_connect_postgres_sslmode(monkeypatch, is_local, override, expected):
+    captured = {}
+
+    class FakeConn:
+        def set_session(self, readonly):
+            captured["readonly"] = readonly
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return FakeConn()
+
+    monkeypatch.setattr(job.psycopg2, "connect", fake_connect)
+    job.connect_postgres(make_settings(is_local=is_local, pg_sslmode=override))
+    assert captured["sslmode"] == expected and captured["readonly"] is True
+
+
+def test_settings_sslmode_from_env(monkeypatch):
+    for key, value in BASE_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("POSTGRES_SSLMODE", "disable")
+    assert job.Settings.from_env().pg_sslmode == "disable"
+    monkeypatch.delenv("POSTGRES_SSLMODE")
+    assert job.Settings.from_env().pg_sslmode is None
+
+
 def test_settings_bucket_falls_back_to_participant_id(monkeypatch):
     for key, value in BASE_ENV.items():
         monkeypatch.setenv(key, value)

@@ -118,6 +118,7 @@ class Settings:
     s3_endpoint: str | None
     landing_prefix: str = "landing/learning_activity/"
     bronze_prefix: str = "bronze/"
+    pg_sslmode: str | None = None  # POSTGRES_SSLMODE; default: prefer locally, require in the cloud
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -148,6 +149,7 @@ class Settings:
             bucket=bucket,
             aws_region=os.getenv("AWS_REGION", "ap-south-1"),
             s3_endpoint=os.getenv("AWS_ENDPOINT_URL") or None,
+            pg_sslmode=os.getenv("POSTGRES_SSLMODE") or None,
         )
 
 
@@ -195,7 +197,12 @@ def with_retry(
 
 
 def connect_postgres(settings: Settings, readonly: bool = True) -> "psycopg2.extensions.connection":
-    """Open a PostgreSQL connection (read-only by default; SSL required in the cloud)."""
+    """Open a PostgreSQL connection (read-only by default; SSL required in the cloud).
+
+    ``POSTGRES_SSLMODE`` overrides the default, e.g. ``disable`` for the in-cluster source
+    database, whose traffic never leaves the Kubernetes cluster network.
+    """
+    sslmode = settings.pg_sslmode or ("prefer" if settings.is_local else "require")
 
     def _connect() -> "psycopg2.extensions.connection":
         conn = psycopg2.connect(
@@ -204,7 +211,7 @@ def connect_postgres(settings: Settings, readonly: bool = True) -> "psycopg2.ext
             dbname=settings.pg_name,
             user=settings.pg_user,
             password=settings.pg_pass,
-            sslmode="prefer" if settings.is_local else "require",
+            sslmode=sslmode,
             connect_timeout=10,
         )
         conn.set_session(readonly=readonly)

@@ -7,8 +7,9 @@
 # apply does, in order:
 #   1. creates the data lake bucket (Terraform, targeted)
 #   2. uploads the sample data: CSVs + schema.sql -> seed/postgres/, events -> landing/
-#   3. runs the official bin/deploy-backend.sh with EKS enabled (Aurora, EKS, JupyterHub, data job)
-# The job's "seed" stage loads the CSVs into Aurora on its first run, then Bronze -> Silver -> Gold.
+#   3. runs the official bin/deploy-backend.sh with EKS enabled (EKS, JupyterHub, data job and,
+#      by default, an in-cluster PostgreSQL source; set TF_VAR_data_source_in_cluster=false for Aurora)
+# The job's "seed" stage loads the CSVs into the empty source database, then Bronze -> Silver -> Gold.
 set -euo pipefail
 
 MODE="${1:-plan}"
@@ -59,8 +60,13 @@ case "$MODE" in
   status)
     aws eks update-kubeconfig --region "$AWS_REGION" --name "coding-workshop-${PARTICIPANT_ID}" >/dev/null
     kubectl get job "$JOB_NAME" -n default || true
+    kubectl get pods -n default -l "app.kubernetes.io/component=$JOB_NAME-db" || true
     kubectl get pods -n default -l "job-name=$JOB_NAME" || true
-    kubectl logs -n default "job/$JOB_NAME" --tail=40 || true
+    kubectl logs -n default "job/$JOB_NAME" --all-containers --tail=40 || true
+    BUCKET="${TF_VAR_aws_project:-coding-workshop}-datalake-${PARTICIPANT_ID}"
+    for layer in bronze silver gold; do
+        echo "$layer files in S3: $(aws s3 ls "s3://$BUCKET/$layer/" --recursive | wc -l)"
+    done
     ;;
   *)
     echo "Usage: $0 plan|apply|status" >&2

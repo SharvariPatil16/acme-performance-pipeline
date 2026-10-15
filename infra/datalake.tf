@@ -27,6 +27,22 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "datalake" {
   }
 }
 
+# Source database for the data jobs on EKS. "true" runs PostgreSQL inside the cluster
+# (templates/source-db.yaml): the job reaches it without any security-group change.
+# "false" uses the Aurora cluster, which needs TCP 5432 from the EKS cluster security group.
+variable "data_source_in_cluster" {
+  description = "Run the data jobs' source PostgreSQL inside EKS instead of using Aurora"
+  type        = bool
+  default     = true
+}
+
+# Password for the in-cluster source database (kept in Terraform state and the git-ignored values file).
+resource "random_password" "source_db" {
+  count   = var.data_source_in_cluster ? 1 : 0
+  length  = 24
+  special = false
+}
+
 # Settings injected into each data job running on EKS (written to a git-ignored, sensitive
 # values file so the database password never appears in Terraform or Helm command output).
 resource "local_sensitive_file" "job_env" {
@@ -44,6 +60,10 @@ resource "local_sensitive_file" "job_env" {
           SOURCE_SEED_PREFIX = "seed/postgres/"
         },
       )
+    }
+    sourceDb = {
+      enabled  = var.data_source_in_cluster
+      password = var.data_source_in_cluster ? random_password.source_db[0].result : ""
     }
   })
 }

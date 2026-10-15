@@ -25,6 +25,21 @@ spec:
       labels:
         {{- include "labels" . | nindent 8 }}
     spec:
+      {{- if .Values.sourceDb.enabled }}
+      initContainers:
+        - name: wait-for-source-db
+          image: {{ .Values.sourceDb.image }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for the in-cluster source database..."
+              for i in $(seq 1 90); do
+                pg_isready -h {{ include "name" . }}-{{ .Values.pythonJob.name }}-db -p 5432 && exit 0
+                sleep 5
+              done
+              echo "Source database not ready after 450 s" >&2
+              exit 1
+      {{- end }}
       containers:
         - name: {{ include "name" . }}-{{ .Values.pythonJob.name }}
           image: {{ .Values.pythonJob.image.repository }}:{{ .Values.pythonJob.image.tag }}
@@ -37,11 +52,31 @@ spec:
                 pip install --no-cache-dir -r /app/requirements.txt
               fi
               python /app/job.py
-          {{- with .Values.pythonJob.env }}
+          {{- $dbKeys := list "POSTGRES_HOST" "POSTGRES_PORT" "POSTGRES_NAME" "POSTGRES_USER" "POSTGRES_PASS" "POSTGRES_SSLMODE" }}
+          {{- if or .Values.pythonJob.env .Values.sourceDb.enabled }}
           env:
-            {{- range $name, $value := . }}
+            {{- range $name, $value := .Values.pythonJob.env }}
+            {{- if not (and $.Values.sourceDb.enabled (has $name $dbKeys)) }}
             - name: {{ $name }}
               value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.sourceDb.enabled }}
+            - name: POSTGRES_HOST
+              value: {{ include "name" . }}-{{ .Values.pythonJob.name }}-db
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_NAME
+              value: {{ .Values.sourceDb.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.sourceDb.user | quote }}
+            - name: POSTGRES_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "name" . }}-{{ .Values.pythonJob.name }}-db
+                  key: password
+            - name: POSTGRES_SSLMODE
+              value: "disable" # traffic stays inside the cluster network
             {{- end }}
           {{- end }}
           {{- if .Values.pythonJob.scriptContent }}
