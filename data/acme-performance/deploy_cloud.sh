@@ -45,7 +45,8 @@ case "$MODE" in
     terraform apply -input=false -auto-approve \
         -target=aws_s3_bucket.datalake \
         -target=aws_s3_bucket_public_access_block.datalake \
-        -target=aws_s3_bucket_server_side_encryption_configuration.datalake
+        -target=aws_s3_bucket_server_side_encryption_configuration.datalake \
+        -target=aws_s3_bucket_policy.datalake
 
     echo "INFO: [2/3] Uploading sample data ..."
     aws s3 cp "$DATASET/schema.sql" "s3://$BUCKET/seed/postgres/schema.sql" --only-show-errors

@@ -71,3 +71,32 @@ resource "local_sensitive_file" "job_env" {
     }
   })
 }
+
+# Let the data jobs on EKS (which run as the EKS node role) use the data lake bucket.
+# The workshop role grants that role no S3 access to new buckets, so access is granted
+# here, on the bucket itself, and only for this bucket.
+resource "aws_s3_bucket_policy" "datalake" {
+  count  = data.aws_caller_identity.this.id != "000000000000" ? 1 : 0
+  bucket = aws_s3_bucket.datalake.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EksJobsListBucket"
+        Effect    = "Allow"
+        Principal = { AWS = local.eks_role_arn }
+        Action    = ["s3:ListBucket", "s3:GetBucketLocation"]
+        Resource  = aws_s3_bucket.datalake.arn
+      },
+      {
+        Sid       = "EksJobsReadWriteObjects"
+        Effect    = "Allow"
+        Principal = { AWS = local.eks_role_arn }
+        Action    = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource  = "${aws_s3_bucket.datalake.arn}/*"
+      },
+    ]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.datalake]
+}
