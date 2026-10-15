@@ -115,6 +115,8 @@ aws --endpoint-url http://localhost:4566 s3 sync \
 ./data/acme-performance/run_local.sh --stage silver  # or one stage
 ./data/acme-performance/run_tests.sh                 # 71 tests + coverage report
 ./notebooks/run_notebook.sh                          # execute the insights notebook
+./notebooks/open_notebook.sh aws                     # open it in the browser, reading Gold from the AWS data lake
+./notebooks/open_notebook.sh local                   # ... or from LocalStack
 ```
 
 The first run creates `data/acme-performance/.venv` and installs `requirements.txt`. `run_local.sh` also repairs two
@@ -222,5 +224,6 @@ data/acme-performance/
 notebooks/
 ├── acme_performance_insights.ipynb
 ├── requirements.txt
-└── run_notebook.sh
+├── run_notebook.sh
+└── open_notebook.sh
 ```

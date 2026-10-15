@@ -3,3 +3,4 @@
 matplotlib==3.10.7
 ipykernel==7.4.0
 nbconvert==7.17.2
+notebook==7.5.8
