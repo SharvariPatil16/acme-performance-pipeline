@@ -4,6 +4,7 @@
 #         ./data/acme-performance/deploy_cloud.sh apply    # create/update resources and run the job
 #         ./data/acme-performance/deploy_cloud.sh status   # show the job's pod and recent logs
 #         ./data/acme-performance/deploy_cloud.sh results  # show the Bronze/Silver/Gold results stored in AWS S3
+#         ./data/acme-performance/deploy_cloud.sh jupyter  # open the workshop JupyterHub on EKS at http://localhost:8080
 #
 # apply does, in order:
 #   1. creates the data lake bucket (Terraform, targeted)
@@ -102,8 +103,16 @@ case "$MODE" in
     aws s3 cp "s3://$BUCKET/$(latest gold)" - | jq -r '"run " + .run_id + "  status " + .status,
         (.records[] | select(.target) | "  \(.target): \(.rows) rows, grain unique \(.grain_unique)  -> \(.question)")'
     ;;
+  jupyter)
+    # JupyterHub (installed on EKS by the workshop Terraform) has no public address:
+    # tunnel to its proxy Service. Log in with the WorkSpaces username and password.
+    aws eks update-kubeconfig --region "$AWS_REGION" --name "coding-workshop-${PARTICIPANT_ID}" >/dev/null
+    kubectl get pods -n default -l "app=jupyterhub" || true
+    echo "INFO: JupyterHub on EKS: open http://localhost:8080 in the browser (Ctrl+C here to close the tunnel)"
+    exec kubectl port-forward -n default svc/proxy-public 8080:80
+    ;;
   *)
-    echo "Usage: $0 plan|apply|status|results" >&2
+    echo "Usage: $0 plan|apply|status|results|jupyter" >&2
     exit 1
     ;;
 esac
