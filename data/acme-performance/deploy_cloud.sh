@@ -64,6 +64,12 @@ case "$MODE" in
     kubectl get job "$JOB_NAME" -n default || true
     kubectl get pods -n default -l "app.kubernetes.io/component=$JOB_NAME-db" || true
     kubectl get pods -n default -l "job-name=$JOB_NAME" || true
+    for pod in $(kubectl get pods -n default -l "job-name=$JOB_NAME" \
+            --field-selector=status.phase=Failed -o name 2>/dev/null); do
+        echo "== Failed attempt: $pod (last 25 lines) =="
+        kubectl logs -n default "$pod" --all-containers --tail=25 || true
+    done
+    echo "== Current attempt (last 40 lines) =="
     kubectl logs -n default "job/$JOB_NAME" --all-containers --tail=40 || true
     BUCKET="${TF_VAR_aws_project:-coding-workshop}-datalake-${PARTICIPANT_ID}"
     for layer in bronze silver gold; do
