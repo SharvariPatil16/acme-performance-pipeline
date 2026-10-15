@@ -141,6 +141,7 @@ No secret is stored in the repository; `.env.local` is git-ignored.
 ./data/acme-performance/deploy_cloud.sh plan     # read-only: what Terraform would change
 ./data/acme-performance/deploy_cloud.sh apply    # bucket -> data upload -> official bin/deploy-backend.sh (EKS on)
 ./data/acme-performance/deploy_cloud.sh status   # job, pods and recent logs on EKS
+./data/acme-performance/deploy_cloud.sh results  # Bronze/Silver/Gold results stored in AWS S3 (from the lineage manifests)
 ```
 
 `apply` creates the data lake bucket (`infra/datalake.tf`), uploads the sample CSVs to `seed/postgres/` and the events to

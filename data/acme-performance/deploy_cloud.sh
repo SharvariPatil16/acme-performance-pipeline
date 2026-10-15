@@ -3,6 +3,7 @@
 # Usage:  ./data/acme-performance/deploy_cloud.sh plan     # read-only: show what would be created
 #         ./data/acme-performance/deploy_cloud.sh apply    # create/update resources and run the job
 #         ./data/acme-performance/deploy_cloud.sh status   # show the job's pod and recent logs
+#         ./data/acme-performance/deploy_cloud.sh results  # show the Bronze/Silver/Gold results stored in AWS S3
 #
 # apply does, in order:
 #   1. creates the data lake bucket (Terraform, targeted)
@@ -83,8 +84,26 @@ case "$MODE" in
         echo "$layer files in S3: $(aws s3 ls "s3://$BUCKET/$layer/" --recursive | wc -l)"
     done
     ;;
+  results)
+    BUCKET="${TF_VAR_aws_project:-coding-workshop}-datalake-${PARTICIPANT_ID}"
+    # newest lineage manifest of a layer (Bronze/Silver/Gold), read straight from AWS S3
+    latest() { aws s3 ls "s3://$BUCKET/$1/_lineage/" --recursive | sort | tail -1 | awk '{print $4}'; }
+    echo "== Data lake in AWS: s3://$BUCKET ($AWS_REGION) =="
+    aws s3 ls "s3://$BUCKET/"
+    for layer in bronze silver gold; do
+        echo "$layer: $(aws s3 ls "s3://$BUCKET/$layer/" --recursive | wc -l) files"
+    done
+    echo ""
+    echo "== Silver: data quality (latest run) =="
+    aws s3 cp "s3://$BUCKET/$(latest silver)" - | jq -r '"run " + .run_id + "  status " + .status,
+        (.records[] | select(.entity) | "  \(.entity): read \(.rows_read), duplicates \(.duplicates_removed), rejected \(.rows_rejected), written \(.rows_written), reconciled \(.reconciled)")'
+    echo ""
+    echo "== Gold: business tables (latest run) =="
+    aws s3 cp "s3://$BUCKET/$(latest gold)" - | jq -r '"run " + .run_id + "  status " + .status,
+        (.records[] | select(.target) | "  \(.target): \(.rows) rows, grain unique \(.grain_unique)  -> \(.question)")'
+    ;;
   *)
-    echo "Usage: $0 plan|apply|status" >&2
+    echo "Usage: $0 plan|apply|status|results" >&2
     exit 1
     ;;
 esac
