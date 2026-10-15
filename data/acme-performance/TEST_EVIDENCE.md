@@ -73,21 +73,34 @@ small/medium/large scale tests — the job can be pointed at a larger landing pr
 ## 4. Cloud deployment (AWS ap-south-1, 2026-10-15)
 
 ```bash
-./data/acme-performance/deploy_cloud.sh plan     # Plan: 8 to add, 2 to change (Aurora tags only), 0 to destroy
+./data/acme-performance/deploy_cloud.sh plan     # read-only: what Terraform would change
 ./data/acme-performance/deploy_cloud.sh apply    # run by the participant
-./data/acme-performance/deploy_cloud.sh status
+./data/acme-performance/deploy_cloud.sh status   # job, pods, logs, Bronze/Silver/Gold file counts
 ```
+
+### Final result — end-to-end run on EKS ✅
 
 | Check | Result |
 |---|---|
-| Data lake bucket + uploads | ✅ `Apply complete! 3 added`; `landing files in S3: 783`; seed CSVs uploaded |
-| EKS, node group, JupyterHub, Helm data job | ✅ `Apply complete! Resources: 5 added, 2 changed, 0 destroyed`; Helm `STATUS: deployed` |
-| Job on EKS | ❌ 4 pods, all `Error`: seed stage → `connection to server at "coding-workshop-rds-1bd9f4ac.cluster-…" (10.0.40.119), port 5432 failed: timeout expired`; retried 1 s/2 s/4 s, then `job failed` (retry and failure logging worked as designed) |
-| Diagnosis | EKS nodes in `sg-03b8f8749f01e886e`; Aurora SG `sg-033177241dd1d5acc` allows only itself + TCP 389/443 |
-| Permission check (`--dry-run`, nothing changed) | `AuthorizeSecurityGroupIngress` → UnauthorizedOperation; `CreateLaunchTemplate` → UnauthorizedOperation |
+| Kubernetes job `coding-workshop-acme-performance` | `Complete 1/1`, duration 6 m 49 s (incl. ~2 min package install) |
+| Job log | `"msg": "job finished", "status": "SUCCEEDED", "duration_s": 325.62` (run `20261015T053811Z-0d12c320`) |
+| Source database | PostgreSQL 16 inside EKS, seeded from `s3://coding-workshop-datalake-1bd9f4ac/seed/postgres/` |
+| Silver (cloud) | 8 entities, **41,747** written, **142** quarantined (129 schema validation, 13 malformed JSON), **152** duplicates removed, all reconciled |
+| Gold (cloud) | **9 tables, 39,549 rows**, every grain check `grain_unique: true` |
+| Files in `s3://coding-workshop-datalake-1bd9f4ac/` | bronze **791**, silver **54**, gold **19** |
 
-**Conclusion:** deployment automation works; the cloud run needs one security-group rule from the workshop admin
-(TCP 5432 from the EKS cluster SG to the Aurora SG). See README → *Cloud deployment*.
+The cloud counts are **identical to the VDI run** (section 2), which shows the pipeline is deterministic across environments.
+
+### Problems found on the way to the cloud run (and fixed)
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| 1 | Seed stage: `port 5432 failed: timeout` to Aurora | EKS nodes (`sg-03b8f8749f01e886e`) not allowed into the Aurora SG (`sg-033177241dd1d5acc`); participant role cannot add the rule (`UnauthorizedOperation`, verified with `--dry-run`) | Source PostgreSQL runs inside EKS (`infra/helm/templates/source-db.yaml`); switch back with `TF_VAR_data_source_in_cluster=false` once the rule exists |
+| 2 | `terraform init`: bucket is in `ap-south-1`, request went to `us-east-1` | Shell still had the LocalStack region exported | `deploy_cloud.sh` always sets the cloud region |
+| 3 | `NoCredentialsError: Unable to locate credentials` | Job container could not reach the node role's credentials (instance-metadata hop limit) | Job pod uses the node network (`hostNetwork`) + longer metadata timeout |
+| 4 | `AttributeError: _ARRAY_API not found` warnings | Image's `bottleneck`/`numexpr` built for NumPy 1.x | Pinned `bottleneck==1.4.2`, `numexpr==2.10.2` |
+| 5 | `AccessDenied … s3:ListBucket` for role `coding-workshop-eks-ap-south-1-1bd9f4ac` | Node role has no S3 access to new buckets | Bucket policy on the data lake bucket, for that role and this bucket only |
+| 6 | Helm cannot change an existing Job | Kubernetes Jobs are immutable | `deploy_cloud.sh apply` deletes the previous (finished) Job first |
 
 ## 5. Defects found by testing on the VDI (and fixed)
 

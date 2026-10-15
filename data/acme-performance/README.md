@@ -147,25 +147,20 @@ to EKS through the workshop Helm chart, now extended to pass the job's settings 
 region) from a git-ignored, sensitive values file. In the cloud the job's `seed` stage loads the CSVs into the empty
 Aurora database once, then runs Bronze → Silver → Gold.
 
-**Deployment result (2026-10-15):**
+**Deployment result (2026-10-15): ✅ end to end in AWS.** The EKS job finished `SUCCEEDED` (325 s pipeline time):
+Silver 41,747 rows (142 quarantined, 152 duplicates removed), Gold 9 tables / 39,549 rows, all grain checks passed —
+identical to the VDI run. Files in `s3://coding-workshop-datalake-1bd9f4ac/`: bronze 791, silver 54, gold 19.
+Details and the problems fixed on the way: [TEST_EVIDENCE.md](TEST_EVIDENCE.md) section 4.
 
-| Component | Result |
-|---|---|
-| Terraform apply (bucket, EKS cluster + node group, JupyterHub, data job; Aurora tags) | ✅ `Apply complete` — 8 added, 2 changed (tags only), 0 destroyed |
-| Data lake bucket `coding-workshop-datalake-1bd9f4ac` (private, AES256) | ✅ created; 783 landing files + 7 CSVs + `schema.sql` uploaded |
-| EKS job `coding-workshop-acme-performance` | ✅ deployed and started; ❌ **cannot reach Aurora** — `port 5432 failed: timeout` |
+**Why the source database runs inside EKS:** EKS managed nodes use the EKS cluster security group (`sg-03b8f8749f01e886e`),
+while Aurora uses the workshop security group (`sg-033177241dd1d5acc`), which only accepts traffic from itself.
+The participant IAM role cannot change this (`ec2 authorize-security-group-ingress` → `UnauthorizedOperation`, verified
+with `--dry-run`). A workshop admin could add **TCP 5432 from `sg-03b8f8749f01e886e`** to the Aurora security group; the
+job would then use Aurora with no code change.
 
-**Root cause (network, not code):** EKS managed nodes use the EKS cluster security group (`sg-03b8f8749f01e886e`),
-while Aurora uses the workshop security group (`sg-033177241dd1d5acc`), which only accepts traffic from itself
-(plus TCP 389/443). The participant IAM role is not allowed to fix this — both
-`ec2 authorize-security-group-ingress` and `ec2 create-launch-template` return `UnauthorizedOperation` (verified with
-`--dry-run`, no changes made).
-
-**Fix (needs workshop admin):** add an inbound rule on `sg-033177241dd1d5acc` for **TCP 5432 from
-`sg-03b8f8749f01e886e`** (or attach the workshop security group to the node group). No code change is needed; then
-re-run `deploy_cloud.sh apply` (or delete the finished Kubernetes job so Helm re-creates it) and check `status`.
-Alternative within participant permissions: a VPC Lambda (the workshop's Lambdas already use the workshop security group)
-that exports the source tables to S3 for the EKS job.
+**S3 access for the job:** the job runs as the EKS node role. The data lake bucket has a bucket policy
+(`infra/datalake.tf`) that lets only that role list, read and write only this bucket; the bucket stays private and
+encrypted.
 
 **Workaround within participant permissions (default since 2026-10-15): in-cluster source database.**
 `TF_VAR_data_source_in_cluster` (default `true`, `infra/datalake.tf`) makes the Helm chart run PostgreSQL 16 inside the
@@ -206,7 +201,9 @@ admin rule exists: `export TF_VAR_data_source_in_cluster=false` and re-run `depl
 * Source timestamps have no time zone; they are treated as UTC.
 * Performance was measured on the sample only (≈ 55,000 records/min including Spark start-up).
 * **Aurora is not reachable from EKS** without an admin security-group rule, so the cloud run uses an in-cluster
-  PostgreSQL source instead (see *Cloud deployment*). The full
+  PostgreSQL source instead (see *Cloud deployment*). Its storage is temporary; it is reloaded from S3 when empty.
+* The job pod uses the node network (`hostNetwork`) to reach the node role's credentials; a dedicated IAM role per pod
+  (IRSA / EKS Pod Identity) would be the production choice but needs IAM permissions participants do not have. The full
   pipeline is verified end to end on the VDI (LocalStack S3 + PostgreSQL) — see [TEST_EVIDENCE.md](TEST_EVIDENCE.md).
 
 ## Repository layout (participant additions)
