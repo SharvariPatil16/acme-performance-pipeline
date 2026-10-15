@@ -22,7 +22,9 @@ export TF_VAR_aws_eks_enabled=true
 "$ROOT/bin/setup-participant.sh" >/dev/null
 # shellcheck disable=SC1091
 source "$ROOT/ENVIRONMENT.config"
-export AWS_REGION="${AWS_REGION:-ap-south-1}"
+# Always the workshop's cloud region: a shell used for local runs may still have the LocalStack
+# region (us-east-1) exported, and bin/deploy-backend.sh keeps whatever AWS_REGION is set.
+export AWS_REGION="${ACME_CLOUD_REGION:-ap-south-1}" AWS_DEFAULT_REGION="${ACME_CLOUD_REGION:-ap-south-1}"
 unset AWS_ENDPOINT_URL AWS_ENDPOINT_URL_S3   # real AWS, never LocalStack
 
 cd "$ROOT/infra"
