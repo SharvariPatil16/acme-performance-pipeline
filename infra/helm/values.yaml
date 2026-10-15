@@ -4,6 +4,7 @@ pythonJob:
   scriptContent: ""
   requirementsContent: ""
   env: {} # environment variables for the job container (set per job by Terraform)
+  hostNetwork: false # true: run on the node network (needed for node-role AWS credentials on EKS)
   backoffLimit: 4
   ttlSecondsAfterFinished: 100
   restartPolicy: Never

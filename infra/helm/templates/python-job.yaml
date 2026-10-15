@@ -25,6 +25,12 @@ spec:
       labels:
         {{- include "labels" . | nindent 8 }}
     spec:
+      {{- if .Values.pythonJob.hostNetwork }}
+      # Use the node's network so the job reaches the node role's credentials (instance
+      # metadata with an IMDSv2 hop limit of 1); cluster DNS still resolves Services.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       {{- if .Values.sourceDb.enabled }}
       initContainers:
         - name: wait-for-source-db

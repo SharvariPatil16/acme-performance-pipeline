@@ -52,12 +52,16 @@ resource "local_sensitive_file" "job_env" {
   content = yamlencode({
     pythonJob = {
       ttlSecondsAfterFinished = 3600 # keep the finished pod (and its logs) for an hour
+      hostNetwork             = true # node-role AWS credentials for S3 (see templates/python-job.yaml)
       env = merge(
         { for key, value in local.env_vars : key => value if try(trimspace(value), "") != "" },
         {
           DATA_LAKE_BUCKET   = aws_s3_bucket.datalake.bucket
           AWS_REGION         = data.aws_region.this.region
           SOURCE_SEED_PREFIX = "seed/postgres/"
+          # give boto3 more time/attempts to fetch the node role's credentials
+          AWS_METADATA_SERVICE_TIMEOUT      = "5"
+          AWS_METADATA_SERVICE_NUM_ATTEMPTS = "3"
         },
       )
     }

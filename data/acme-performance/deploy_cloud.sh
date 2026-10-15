@@ -55,6 +55,12 @@ case "$MODE" in
     aws s3 sync "$DATASET/learning_activity" "s3://$BUCKET/landing/learning_activity/" --only-show-errors
     echo "INFO: landing files in S3: $(aws s3 ls "s3://$BUCKET/landing/" --recursive | wc -l)"
 
+    # A Kubernetes Job cannot be changed in place: remove the previous run (finished or failed)
+    # so Helm can create the new one. Only the Kubernetes Job object is deleted, no AWS resource.
+    if aws eks update-kubeconfig --region "$AWS_REGION" --name "coding-workshop-${PARTICIPANT_ID}" >/dev/null 2>&1; then
+        kubectl delete job "$JOB_NAME" -n default --ignore-not-found || true
+    fi
+
     echo "INFO: [3/3] Deploying infrastructure and the data job (EKS takes ~15-20 minutes) ..."
     "$ROOT/bin/deploy-backend.sh" aws
     echo "INFO: Done. Watch the job with: $0 status"
