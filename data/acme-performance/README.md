@@ -111,6 +111,7 @@ aws --endpoint-url http://localhost:4566 s3 sync \
     sampleData/data-engineering-performance-talent-management/learning_activity \
     s3://coding-workshop-datalake-1bd9f4ac/landing/learning_activity/
 
+./data/acme-performance/setup_local.sh               # (re)start LocalStack, create bucket, upload landing files
 ./data/acme-performance/run_local.sh                 # all stages: bronze → silver → gold
 ./data/acme-performance/run_local.sh --stage silver  # or one stage
 ./data/acme-performance/run_tests.sh                 # 71 tests + coverage report
