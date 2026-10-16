@@ -11,7 +11,7 @@ analytics-ready datasets that answer seven business questions. Built for the Cit
 | **Sources** | PostgreSQL (7 tables) + S3 landing zone (783 JSON-lines files, 29,868 learning events) |
 | **Data lake** | One S3 bucket, medallion layout: `landing/` → `bronze/` → `silver/` → `gold/` |
 | **Outputs** | 9 Gold datasets + insights notebook (`notebooks/acme_performance_insights.ipynb`) |
-| **Tests** | 71 tests, 98 % coverage — see [TEST_EVIDENCE.md](TEST_EVIDENCE.md) |
+| **Tests** | 75 tests, 98 % coverage — see [TEST_EVIDENCE.md](TEST_EVIDENCE.md) |
 | **Mapping** | Column-level source → target lineage — see [docs/SOURCE_TO_TARGET.md](docs/SOURCE_TO_TARGET.md) |
 
 ## Architecture
@@ -114,7 +114,7 @@ aws --endpoint-url http://localhost:4566 s3 sync \
 ./data/acme-performance/setup_local.sh               # (re)start LocalStack, create bucket, upload landing files
 ./data/acme-performance/run_local.sh                 # all stages: bronze → silver → gold
 ./data/acme-performance/run_local.sh --stage silver  # or one stage
-./data/acme-performance/run_tests.sh                 # 71 tests + coverage report
+./data/acme-performance/run_tests.sh                 # 75 tests + coverage report
 ./notebooks/run_notebook.sh                          # execute the insights notebook
 ./notebooks/open_notebook.sh aws                     # open it in the browser, reading Gold from the AWS data lake
 ./notebooks/open_notebook.sh local                   # ... or from LocalStack

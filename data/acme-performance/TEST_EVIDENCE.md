@@ -12,7 +12,7 @@ LocalStack S3 (`coding-workshop-datalake-1bd9f4ac`), on 2026-10-14.
 
 | Result | Value |
 |---|---|
-| Tests | **69 passed**, 0 failed (111 s) on the VDI; **71 passed** after adding the two seed-stage tests (dev environment, 148 s) |
+| Tests | **75 tests** in total. 69 passed on the VDI (111 s); 71 after adding the seed-stage tests; 4 more for the `POSTGRES_SSLMODE` setting (2026-10-16: the 71 unit + Spark tests pass, 58 s; the 4 integration tests need the local PostgreSQL) |
 | Line coverage of `job.py` | **98 %** (606 statements, 15 missed — defensive branches) |
 | Report | `data/acme-performance/logs/test-report-<timestamp>.txt` (git-ignored) |
 
